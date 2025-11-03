@@ -1,85 +1,477 @@
-# usersetup
+# Usersetup - Enhanced Edition
 
-This program adds users to a remote system in such a way that their
-access will be by key. The following are constraints on being able to
-execute the program.
+**Original:** [georgeflanagin/usersetup](https://github.com/georgeflanagin/usersetup)  
+**Fork maintainer:** [University of Richmond/João Tonini]
 
-## contraints
+This is an enhanced fork of the original usersetup tool with additional enterprise features for user lifecycle management.
 
-- The user running the program can login as `root` on the remote system.
-    Only `root` can create users and execute the program `chown`.
-- The user running this script need not have any special righs on the system where the script is run. IOW,
-    as long as `joe@localhost` can become `root@remotehost`, `joe` can run the script.
-- The file[s] containing the public keys to be installed on the remote
-    system are on localhost, and are readable. This program will create the
-    user even if no keys are supplied, but the new user will not be able
-    to login until keys are provided. Keys can be added later on by the
-    usual means.
-- This program will happily use a file with multiple public keys, making
-    it suitable for users who have several computers from which they login.
-- The desired UID of the user on the remote system either [1] can be discovered
-    with the `id` command on the computer where this program is run, or
-    [2] is irrelevant and assigned by the remote system.
+## What's New in This Fork?
 
-## What this program does
+### 🆕 Major Enhancements
 
-Why not use the usual command line tools like `ssh-copy-id` and `useradd`
-to setup the remote user? From an administrative standpoint, it is tedious
-and error prone to login / logout, and ensure that the user for whom
-the administrator is creating the account is usable.  The scenario for
-`usersetup` is closer to the informal situation:
+1. **Automatic 'users' Group Membership**
+   - All new users automatically added to 'users' group
+   - Eliminates manual post-creation steps
 
-1. User `fred` wants an account on `remote`.
-2. `fred` emails his public key to the administrator.
-3. The administrator's saves `fred`'s key to a file on the administrator's own computer.
-4. The administrator uses `usersetup` without having to interactively login to `remote`.
-5. `fred` has an account.
+2. **Time-Limited Guest Accounts**
+   - Set expiration dates during account creation
+   - Perfect for visitors, contractors, temporary staff
+   - Accounts expire automatically without manual intervention
 
-Here is what happens:
+3. **Safe User Deletion**
+   - Complete cleanup of user data
+   - Automatic backup of home directory
+   - Process termination and resource cleanup
+   - Synchronization across compute nodes
 
-- The remote system is queried to determine the default group name on that system.
-- If the UID is not given, usersetup tries to discover it. If it cannot be determined, then the remote system assigns it by whatever algorithm it uses.
-- The user on the remote system is created, a home directory is created, and the skeleton files on the remote system are used to provide `.bashrc`, `.bash_profile`, and so on.
-- Whatever group scheme is in use on the remote machine (usually UPG), the new user is added to the default group to which all users can belong.
-- The group association of the new user's `$HOME` is changed to the default group.
-- The permissions on the new user's `$HOME` are set to `2755`.
-- A `$HOME/.ssh` directory is created.
-- Any keys supplied are added to `$HOME/.ssh/authorized_keys`.
-- Permissions and ownership are set appropriately.
-- An ed25519 key is created for the user on the remote machine.
-- The accounts are propagated to the compute nodes.
+4. **Account Management Commands**
+   - List all users with expiration dates
+   - Modify expiration dates for existing accounts
+   - Convert temporary to permanent accounts
 
+### Bug Fixes
 
-## Usage
+- Fixed negation syntax in `userexists` check
+- Fixed missing `echo` statement
+- Improved error handling
+- Added cleanup of temporary files
 
-```
-[~]: source usersetup.sh
+## Installation
 
-[~]: choosehost arachne
+### Fork and Clone
 
-[~]: usersetup cparish carols.key.pub
-
+```bash
+git clone https://github.com/jtonini/usersetup.git
+cd usersetup
+source usersetup.sh
 ```
 
-## Some important things to know:
+### Or Download Directly
 
-[1] There is no requirement to use a key that is from an existing `.ssh`
-directory, and there is no need to give the key file[s] restricted
-permissions. The new `~/.ssh/authorized_keys` file will be given the
-correct permissions by the `usersetup` program.
+```bash
+wget https://raw.githubusercontent.com/jtonini/usersetup/main/usersetup.sh
+source usersetup.sh
+```
 
-[2] The user being created need not exist on localhost.
+## Quick Start
 
-[3] If the user already exists on the remote host, you can still use
-this command to transfer keys and do the remainder of the setup.
+### 1. Choose Target Host
 
-[4] The program can be run anywhere on the network; i.e., the target
-computer where the user is to be created can be *this* computer.
+```bash
+choosehost arachne
+```
 
-[5] The newly created user does not need to run `ssh-keygen` to create
-a private/public key pair. In many cases the target computer is one that
-is only connected *to* rather than a source of new connections.
+### 2. Create Users
 
-[6] Most mistakes are forgiven. If the new user already exists, this program
-can be used to append keys.
+**Permanent user:**
+```bash
+usersetup fred fred.pub.key
+```
 
+**Temporary user (expires in 90 days):**
+```bash
+usersetup fred fred.pub.key 90
+```
+
+### 3. Manage Users
+
+**List all users:**
+```bash
+listusers
+```
+
+**Extend expiration:**
+```bash
+userexpiry fred 30  # Add 30 more days
+```
+
+**Make permanent:**
+```bash
+userexpiry fred never
+```
+
+**Delete user:**
+```bash
+userdelete fred
+```
+
+## Complete Command Reference
+
+### Setup Commands
+
+#### `choosehost {hostname}`
+Set the target computer for user operations.
+
+```bash
+choosehost arachne
+```
+
+### User Creation
+
+#### `usersetup {netid} [keyfile] [expiry_days]`
+Create a new user account with optional expiration.
+
+**Parameters:**
+- `netid` - Username to create (required)
+- `keyfile` - SSH public key file (optional, defaults to `netid.keys`)
+- `expiry_days` - Days until account expires (optional, for guest accounts)
+
+**Examples:**
+```bash
+# Permanent faculty/staff account
+usersetup fred fred.pub.key
+
+# Keyfile in current directory matching username
+usersetup fred  # Looks for bob.keys # note: double check if it is looking for netid*key*
+
+# Guest account (expires in 60 days)
+usersetup fred fred.pub.key 60
+```
+
+**What it does:**
+- Creates user account on target host
+- Sets up SSH directory and authorized_keys
+- Adds to DEFAULT_GROUP
+- **Adds to 'users' group** (if exists)
+- Generates ed25519 key pair
+- Sets account expiration (if specified)
+- Syncs to compute nodes
+
+### User Deletion
+
+#### `userdelete {netid} [--force]`
+Safely delete a user account with complete cleanup.
+
+**Parameters:**
+- `netid` - Username to delete (required)
+- `--force` - Skip confirmation prompt (optional)
+
+**Examples:**
+```bash
+# Interactive deletion (asks for confirmation)
+userdelete fred
+
+# Force deletion (no confirmation)
+userdelete fred --force
+```
+
+**What it does:**
+- Prompts for confirmation (unless --force)
+- Kills all user processes (graceful TERM, then KILL)
+- **Creates timestamped backup** of home directory
+- Removes user account
+- Removes home directory
+- Removes mail spool
+- Removes temporary files
+- Removes cron jobs
+- Syncs deletion to compute nodes
+
+**Backup location:** `/root/deleted_users/{username}_{timestamp}.tar.gz`
+
+### Account Management
+
+#### `listusers`
+Display all users with their groups and expiration dates.
+
+```bash
+listusers
+```
+
+**Output:**
+```
+Username        UID     Groups                          Expiration
+--------------------------------------------------------------------------------
+fred            1001    users,staff,developers          never
+bob             1002    users,admin                     never
+guest01         1003    users                          Dec 31 2025
+visitor         1004    users                          Jan 15 2026
+```
+
+#### `userexpiry {netid} {days|never}`
+Modify account expiration for existing users.
+
+**Parameters:**
+- `netid` - Username (required)
+- `days` - Days from today, or "never" for permanent
+
+**Examples:**
+```bash
+# Extend guest account 30 days from today
+userexpiry fred 30
+
+# Remove expiration (make permanent)
+userexpiry fred never
+
+# Expire immediately
+userexpiry fred 0
+```
+
+### Utility Commands
+
+#### `userexists {username}`
+Check if a user exists (local or LDAP).
+
+```bash
+userexists fred
+```
+
+#### `groupexists {groupname}`
+Check if a group exists (local or remote).
+
+```bash
+groupexists users
+```
+
+#### `adduserkey {user} {keyfile}`
+Add additional SSH keys to existing user.
+
+```bash
+adduserkey fred fred_laptop.pub
+```
+
+#### `usersetup_help`
+Display comprehensive help and examples.
+
+```bash
+usersetup_help
+```
+
+### User Departure
+
+```bash
+source usersetup.sh
+choosehost arachne
+
+# Delete with confirmation
+userdelete departing_user
+
+# Verify deletion
+listusers | grep departing_user
+
+# Backup is in: /root/deleted_users/departing_user_*.tar.gz
+```
+
+### Monthly Audit
+
+```bash
+source usersetup.sh
+choosehost arachne
+
+# Review all users
+listusers > user_audit_$(date +%Y%m%d).txt
+
+# Check for accounts expiring soon
+listusers | grep "2025-12"
+
+# Extend if needed
+userexpiry guest01 30
+```
+
+## Requirements
+
+- Root access to target systems via SSH
+- SSH key-based authentication configured
+- Bash shell (Linux/Unix)
+- Target system requirements:
+  - `useradd`, `userdel`, `usermod` commands
+  - `chage` command (for account expiration)
+  - `getent` command
+  - Optional: `users` group (created if missing)
+
+## System Compatibility
+
+Tested on:
+- Ubuntu 20.04, 22.04, 24.04
+- Debian 10, 11, 12
+- CentOS 7, 8
+- Rocky Linux 8, 9
+- RHEL 7, 8, 9
+
+## Architecture
+
+```
+┌─────────────────┐
+│  Administrator  │
+│    Workstation  │
+└────────┬────────┘
+         │ SSH (as root)
+         ▼
+┌─────────────────┐
+│   Target Host   │
+│  (User Master)  │
+└────────┬────────┘
+         │ sync_nodes.sh
+         ▼
+┌─────────────────┐
+│  Compute Nodes  │
+│  (1, 2, 3, ...) │
+└─────────────────┘
+```
+
+## Files and Locations
+
+### On Administrator's Workstation
+- `usersetup.sh` - Main script (source this)
+- `{username}.keys` - Public SSH keys
+- `/tmp/{hostname}.userdefaults.txt` - Temporary files
+
+### On Target Host
+- `/home/{username}/` - User home directories
+- `/home/{username}/.ssh/` - SSH configuration
+- `/root/deleted_users/` - Backup of deleted users
+- `sync_nodes.sh` - Node synchronization script (if exists)
+
+## Configuration
+
+### Default Group Detection
+
+The script automatically detects the default group from the target system:
+
+```bash
+ssh "root@$USER_HOST" "useradd -D"
+```
+
+### Users Group
+
+The script checks for and adds users to the 'users' group if it exists:
+
+```bash
+if getent group users > /dev/null 2>&1; then
+    usermod -aG users "$username"
+fi
+```
+
+If the 'users' group doesn't exist on your system, create it:
+
+```bash
+ssh root@targethost "groupadd users"
+```
+
+## Security Considerations
+
+### Backup Retention
+
+Deleted user backups are stored indefinitely in `/root/deleted_users/`.
+
+**Recommended cleanup policy:**
+```bash
+# Delete backups older than 90 days
+find /root/deleted_users -mtime +90 -delete
+```
+
+### Permissions
+
+- Deletion script requires root access
+- Backups stored in `/root/` (root-only access)
+- SSH keys properly secured (600 for private, 644 for public)
+- Home directories default to 2755 (SGID for group)
+
+### Process Termination
+
+User deletion follows graceful termination:
+1. SIGTERM (graceful shutdown)
+2. 2-second grace period
+3. SIGKILL (force kill if needed)
+
+### Audit Trail
+
+Consider logging all operations:
+```bash
+# Add to your .bashrc
+alias usersetup='usersetup 2>&1 | tee -a /var/log/usersetup.log'
+alias userdelete='userdelete 2>&1 | tee -a /var/log/usersetup.log'
+```
+
+## Troubleshooting
+
+### 'users' group not found
+
+**Symptom:** Warning message about 'users' group
+**Solution:** Create the group:
+```bash
+ssh root@targethost "groupadd users"
+```
+
+### User deletion fails
+
+**Symptom:** Processes still running after deletion
+**Diagnosis:**
+```bash
+ssh root@targethost "ps -u username"
+```
+**Solution:**
+```bash
+ssh root@targethost "pkill -9 -u username"
+userdelete username --force
+```
+
+### Account not expiring
+
+**Symptom:** User can still login after expiration date
+**Diagnosis:**
+```bash
+ssh root@targethost "chage -l username"
+```
+**Solution:**
+```bash
+userexpiry username 0  # Expire immediately
+```
+
+### Backup directory full
+
+**Symptom:** No space for backups
+**Solution:**
+```bash
+# Check space
+ssh root@targethost "df -h /root"
+
+# Clean old backups
+ssh root@targethost "find /root/deleted_users -mtime +90 -delete"
+```
+
+**Key additions:**
+- Automatic 'users' group membership
+- Time-limited accounts with expiration
+- Safe user deletion with backup
+- User listing and management commands
+- Bug fixes and improved error handling
+- Comprehensive help system
+
+## License
+
+Same as original usersetup project.
+
+## Credits
+
+**Original author:** George Flanagin  
+**Original repository:** https://github.com/georgeflanagin/usersetup
+
+**Enhancements:** [João Tonini/University of Richmond]
+
+## Support
+
+For issues specific to this fork:
+- Open an issue on GitHub
+- Include: command used, expected vs actual behavior, system info
+
+For issues with original functionality:
+- See original repository
+
+## Changelog
+
+### Version 2.0 (Enhanced Fork)
+- Added automatic 'users' group membership
+- Added time-limited account support
+- Added `userdelete` command with backup
+- Added `listusers` command
+- Added `userexpiry` command
+- Added `usersetup_help` command
+- Fixed syntax errors in `userexists` check
+- Fixed missing `echo` statement
+- Improved error handling
+- Added cleanup of temporary files
+
+### Version 1.0 (Original)
+- Initial release by George Flanagin
+- User creation and SSH key management
+- See original repository for details
