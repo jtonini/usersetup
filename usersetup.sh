@@ -4,6 +4,7 @@
 #   - Explicit 'users' group addition
 #   - User deletion functionality
 #   - Time-limited guest accounts
+#   - Improved sync_nodes.sh handling
 
 # Get the default group from the remote machine.
 export DEFAULT_GROUP=
@@ -164,7 +165,7 @@ EOF
     fi
 
     netid="$1"
-    keyfile=${2-"$netid".pub.key}
+    keyfile=${2-"$netid".keys}
     expiry_days="$3"
 
     ###
@@ -282,8 +283,41 @@ EOF
     # Clean up the script on remote
     ssh "root@$USER_HOST" "rm -f ~/$netid.sh"
 
+    # ENHANCEMENT: Improved sync_nodes.sh handling
     echo "Creating account for $netid on the nodes of $USER_HOST"
-    ssh root@$USER_HOST "./sync_nodes.sh" 2>/dev/null || echo "Note: sync_nodes.sh not found or failed"
+    
+    # Copy sync scripts if they exist locally
+    local sync_copied=false
+    if [ -f "./sync_nodes.sh" ] && [ -f "./sync_all.sh" ]; then
+        scp ./sync_nodes.sh ./sync_all.sh "root@$USER_HOST:~/" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            ssh "root@$USER_HOST" "chmod +x ~/sync_nodes.sh ~/sync_all.sh" 2>/dev/null
+            sync_copied=true
+        fi
+    elif [ -f ~/sync_nodes.sh ] && [ -f ~/sync_all.sh ]; then
+        scp ~/sync_nodes.sh ~/sync_all.sh "root@$USER_HOST:~/" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            ssh "root@$USER_HOST" "chmod +x ~/sync_nodes.sh ~/sync_all.sh" 2>/dev/null
+            sync_copied=true
+        fi
+    fi
+    
+    # Run sync_nodes.sh if available
+    ssh "root@$USER_HOST" "test -x ~/sync_nodes.sh" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        ssh "root@$USER_HOST" "~/sync_nodes.sh" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "Successfully synced user to compute nodes"
+        else
+            echo "Note: sync_nodes.sh execution failed"
+        fi
+    else
+        if [ "$sync_copied" = true ]; then
+            echo "Note: sync_nodes.sh not executable on $USER_HOST"
+        else
+            echo "Note: sync_nodes.sh not found, skipping node sync"
+        fi
+    fi
 }
 
 ###
@@ -410,7 +444,12 @@ DELSCRIPT
         
         # Sync to compute nodes
         echo "Syncing deletion to compute nodes..."
-        ssh root@$USER_HOST "./sync_nodes.sh" 2>/dev/null || echo "Note: sync_nodes.sh not found or failed"
+        ssh "root@$USER_HOST" "test -x ~/sync_nodes.sh" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            ssh "root@$USER_HOST" "~/sync_nodes.sh" 2>/dev/null || echo "Note: sync_nodes.sh failed"
+        else
+            echo "Note: sync_nodes.sh not found, manual node sync may be needed"
+        fi
         
         # Cleanup
         ssh "root@$USER_HOST" "rm -f ~/$netid.delete.sh"
@@ -550,4 +589,3 @@ Available functions:
 Type the function name without arguments for detailed help.
 EOF
 }
-
