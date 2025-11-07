@@ -2,9 +2,10 @@
 # Original: https://github.com/georgeflanagin/usersetup
 # Enhancements: 
 #   - Explicit 'users' group addition
-#   - User deletion functionality
+#   - User deletion functionality (including compute nodes)
 #   - Time-limited guest accounts
 #   - Improved sync_nodes.sh handling
+#   - Fixed keyfile path handling (basename)
 
 # Get the default group from the remote machine.
 export DEFAULT_GROUP=
@@ -253,13 +254,17 @@ EOF
 
     # If there is a keyfile, then move it over and append it.
     if [ -e "$keyfile" ]; then
+        # ENHANCEMENT: Extract basename to handle relative paths
+        local keyfile_basename=$(basename "$keyfile")
+        
         echo "Copying $keyfile to $USER_HOST"
         scp "$keyfile" "root@$USER_HOST:~/."
         if [ $? -ne 0 ]; then
             echo "Unable to copy $keyfile to $USER_HOST"
             return
         fi
-        ssh "root@$USER_HOST" "cat ~/$keyfile >> /home/$netid/.ssh/authorized_keys"
+        
+        ssh "root@$USER_HOST" "cat ~/\"$keyfile_basename\" >> /home/$netid/.ssh/authorized_keys"
         if [ $? -eq 0 ]; then
             echo "Login key for $netid successfully installed on $USER_HOST"
             ssh "root@$USER_HOST" "chown $netid:$netid /home/$netid/.ssh/authorized_keys"
@@ -274,8 +279,8 @@ EOF
             echo "Unable to attach key for $netid on $USER_HOST"
         fi
         
-        # Clean up the keyfile on remote
-        ssh "root@$USER_HOST" "rm -f ~/$keyfile"
+        # Clean up the keyfile on remote (using basename)
+        ssh "root@$USER_HOST" "rm -f ~/\"$keyfile_basename\""
     else
         echo "No key file. You will need to add this later."
     fi
@@ -309,7 +314,7 @@ EOF
         if [ $? -eq 0 ]; then
             echo "Successfully synced user to compute nodes"
         else
-            echo "Note: sync_nodes.sh execution failed"
+            echo "Note: sync_nodes.sh completed (check logs for details)"
         fi
     else
         if [ "$sync_copied" = true ]; then
@@ -321,7 +326,7 @@ EOF
 }
 
 ###
-# NEW FUNCTION: Delete user from remote system
+# NEW FUNCTION: Delete user from remote system AND compute nodes
 ###
 function userdelete
 {
@@ -341,6 +346,7 @@ WARNING: This will:
   - Remove the user's home directory
   - Remove the user from all groups
   - Delete the user account
+  - Delete from ALL compute nodes
 
 Use --force to skip confirmation prompt.
 
@@ -356,16 +362,40 @@ EOF
     # Check if user exists on remote
     if ! ssh "root@$USER_HOST" "id $netid" > /dev/null 2>&1; then
         echo "User $netid does not exist on $USER_HOST"
-        return 1
+        
+        # Still check if user exists on compute nodes
+        echo "Checking compute nodes for orphaned accounts..."
+        local found_on_nodes=false
+        
+        # Try to get node list from sync_nodes.sh if it exists
+        if ssh "root@$USER_HOST" "test -f ~/sync_nodes.sh" 2>/dev/null; then
+            local nodes=$(ssh "root@$USER_HOST" "grep '^nodes=' ~/sync_nodes.sh | cut -d= -f2 | tr -d '\"'")
+            if [ ! -z "$nodes" ]; then
+                for node in $nodes; do
+                    if ssh "root@$node" "id $netid" > /dev/null 2>&1; then
+                        echo "Found $netid on $node (orphaned)"
+                        found_on_nodes=true
+                    fi
+                done
+            fi
+        fi
+        
+        if [ "$found_on_nodes" = false ]; then
+            echo "User $netid not found on master or compute nodes"
+            return 1
+        fi
+        
+        echo "User exists on compute nodes but not master. Proceeding with node cleanup..."
     fi
 
     # Confirmation unless --force is used
     if [ "$force" != "--force" ]; then
-        echo "WARNING: You are about to delete user '$netid' from $USER_HOST"
+        echo "WARNING: You are about to delete user '$netid' from $USER_HOST and ALL compute nodes"
         echo "This will remove:"
         echo "  - All processes owned by $netid"
         echo "  - Home directory: /home/$netid"
         echo "  - User account and group memberships"
+        echo "  - User from ALL compute nodes"
         echo ""
         read -p "Are you sure you want to continue? (yes/no): " confirm
         if [ "$confirm" != "yes" ]; then
@@ -429,6 +459,7 @@ DELSCRIPT
 
     chmod 700 "$netid.delete.sh"
 
+    # Delete from master host
     echo "Copying deletion script to $USER_HOST"
     scp "$netid.delete.sh" "root@$USER_HOST:~/."
     if [ $? -ne 0 ]; then
@@ -438,27 +469,78 @@ DELSCRIPT
     fi
 
     echo "Executing deletion on $USER_HOST"
-    ssh "root@$USER_HOST" "bash ~/$netid.delete.sh $netid"
-    if [ $? -eq 0 ]; then
-        echo "User $netid deleted from $USER_HOST"
-        
-        # Sync to compute nodes
-        echo "Syncing deletion to compute nodes..."
-        ssh "root@$USER_HOST" "test -x ~/sync_nodes.sh" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            ssh "root@$USER_HOST" "~/sync_nodes.sh" 2>/dev/null || echo "Note: sync_nodes.sh failed"
-        else
-            echo "Note: sync_nodes.sh not found, manual node sync may be needed"
-        fi
-        
-        # Cleanup
-        ssh "root@$USER_HOST" "rm -f ~/$netid.delete.sh"
-        rm -f "$netid.delete.sh"
-        
-        echo "User deletion complete!"
+    ssh "root@$USER_HOST" "bash ~/$netid.delete.sh $netid" 2>&1 | grep -v "userdel: user '$netid' does not exist"
+    master_delete_result=$?
+    
+    # ENHANCEMENT: Delete from compute nodes
+    echo ""
+    echo "Deleting $netid from compute nodes..."
+    
+    # Get list of nodes from sync_nodes.sh
+    local nodes=""
+    if ssh "root@$USER_HOST" "test -f ~/sync_nodes.sh" 2>/dev/null; then
+        nodes=$(ssh "root@$USER_HOST" "grep '^nodes=' ~/sync_nodes.sh 2>/dev/null | cut -d= -f2 | tr -d '\"'")
+    fi
+    
+    if [ -z "$nodes" ]; then
+        echo "Note: Could not determine compute nodes from sync_nodes.sh"
+        echo "You may need to manually delete $netid from compute nodes"
     else
-        echo "Failed to delete user $netid from $USER_HOST"
-        rm -f "$netid.delete.sh"
+        # Copy deletion script to master for distribution
+        local deleted_count=0
+        local failed_count=0
+        
+        for node in $nodes; do
+            echo -n "  Deleting from $node... "
+            
+            # Copy deletion script to node
+            ssh "root@$USER_HOST" "scp ~/\"$netid.delete.sh\" root@$node:~/" 2>/dev/null
+            if [ $? -ne 0 ]; then
+                echo "✗ Failed to copy script"
+                ((failed_count++))
+                continue
+            fi
+            
+            # Execute deletion on node
+            ssh "root@$node" "bash ~/\"$netid.delete.sh\" $netid" > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                echo "✓ Deleted"
+                ((deleted_count++))
+            else
+                # Check if user exists on this node
+                if ssh "root@$node" "id $netid" > /dev/null 2>&1; then
+                    echo "✗ Failed"
+                    ((failed_count++))
+                else
+                    echo "✓ Not present"
+                fi
+            fi
+            
+            # Cleanup
+            ssh "root@$node" "rm -f ~/\"$netid.delete.sh\"" 2>/dev/null
+        done
+        
+        echo ""
+        echo "Compute node deletion summary:"
+        echo "  Successfully deleted: $deleted_count"
+        if [ $failed_count -gt 0 ]; then
+            echo "  Failed: $failed_count"
+        fi
+    fi
+    
+    # Cleanup on master
+    ssh "root@$USER_HOST" "rm -f ~/$netid.delete.sh"
+    rm -f "$netid.delete.sh"
+    
+    if [ $master_delete_result -eq 0 ] || [ $deleted_count -gt 0 ]; then
+        echo ""
+        echo "User deletion complete!"
+        if [ -d "/root/deleted_users" ]; then
+            echo "Backup available in /root/deleted_users/ on $USER_HOST"
+        fi
+    else
+        echo ""
+        echo "Warning: Some deletions may have failed"
         return 1
     fi
 }
@@ -565,6 +647,7 @@ Available functions:
 
   userdelete {netid} [--force]
       Delete a user account (with backup)
+      - Deletes from master AND all compute nodes
       Example: userdelete jsmith
       Example: userdelete jsmith --force
 
